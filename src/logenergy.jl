@@ -5,7 +5,7 @@ import Distributions: Chi, Gamma, quantile
 import GenericLinearAlgebra: eigen
 import Formatting: printfmt
 import LinearAlgebra: tril
-import Random: AbstractRNG, GLOBAL_RNG, seed!
+import Random: AbstractRNG, GLOBAL_RNG, seed!, shuffle!
 import SparseArrays: sparse, spzeros
 import SpecialFunctions: gamma
 import Statistics: mean
@@ -105,37 +105,24 @@ end
 ## Sparse matrix models
 regularGraph(n::Integer=32, k::Integer=3) = regularGraph(GLOBAL_RNG, n, k)
 function regularGraph(rng::AbstractRNG=GLOBAL_RNG, n::Integer=32, k::Integer=3)
-    maxIter = 10
-
-    edgesTested = 0
-    repetition = 0
-    u = repeat(1:n, k) # list of open half-edges
-    m = spzeros(Integer, n, n) # the graph adjacency matrix
-    while ~isempty(u) && repetition < maxIter        
-        edgesTested += 1
-
-        # choose at random 2 half-edges
-        i1 = ceil(Int, rand(rng) * length(u))
-        i2 = ceil(Int, rand(rng) * length(u))
-        v1 = u[i1]
-        v2 = u[i2]
-
-        if (v1 == v2 || m[v1, v2] == 1)
-            if edgesTested == n * k
-                repetition += 1
-                edgesTested = 0
-
-                u = repeat(1:n, k)
-                m = spzeros(Integer, n, n)
+    # need n*k even and n ≥ k+1
+    m = []
+    d = 0
+    edges = [[i j] for i in 1:(n-1) for j in (i+1):n]
+    while ~all(d .== k)
+        m = spzeros(Int, n, n)
+        d = zeros(1, n)
+        shuffle!(edges)
+        e = copy(edges)
+        while ~isempty(e)
+            u, v = pop!(e)
+            if m[u, v] == 0 && d[u] < k && d[v] < k
+                m[u, v] = 1
+                m[v, u] = 1
+                d[u] += 1
+                d[v] += 1
             end
-        else
-          m[v1, v2] = 1
-          m[v2, v1] = 1
-
-          v = sort([i1, i2])
-          deleteat!(u, v[2])
-          deleteat!(u, v[1])
-        end        
+        end
     end
     return m
 end
@@ -169,7 +156,7 @@ function logEnergy(model::Function, components)
         b = eig(model())
         c = b .- a'
     end
-    return [-mean(log.(abs.(c))); map(f -> mean((f.(a) .+ f.(b))/2), components)]
+    return [-mean(log.(abs.(c))) map(f -> mean((f.(a) .+ f.(b))/2), components)]
 end
 
 ## Main program
@@ -347,6 +334,8 @@ function main()
     println("# threads = ", nthreads())
     println("# output = ", join(["log-entropy"; map(y -> y[1], comp)], ";"))
 
+    seed!(args["seed"])
+
     # Print an example
     if args["example"]
         println("# example_matrix =")
@@ -357,15 +346,13 @@ function main()
     end
     
     # Parallel computing
-    seed!(args["seed"])
     comp = map(y -> y[2], comp)
     z = logEnergy(func, comp)
-    data = zeros(typeof(z[1]), cycles, length(z))
-    data[1, :] = z
+    data = repeat(z, cycles)
     @threads for i = 2 : cycles
         data[i, :] = logEnergy(func, comp)
     end
-    x = mean(data, dims=1)
+    x = cycles > 1 ? mean(data, dims=1) : data
     format = replace("{};" ^ length(x), r";$" => "\n")
     printfmt(format, x...)
 end
